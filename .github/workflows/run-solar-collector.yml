@@ -24,8 +24,31 @@ jobs:
           pip install requests firebase-admin
 
       - name: Create serviceAccountKey.json from GitHub Secret
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" > serviceAccountKey.json
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          raw = os.environ.get("FIREBASE_SERVICE_ACCOUNT", "").strip()
+          if not raw:
+              print("FIREBASE_SERVICE_ACCOUNT is empty", file=sys.stderr)
+              sys.exit(1)
+
+          def parse_service_account(text):
+              try:
+                  return json.loads(text)
+              except json.JSONDecodeError:
+                  normalized = re.sub(r'([{\[,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', text)
+                  return json.loads(normalized)
+
+          data = parse_service_account(raw)
+          with open("serviceAccountKey.json", "w", encoding="utf-8") as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
+          PY
 
       - name: Check files in directory (Debug)
         run: |
