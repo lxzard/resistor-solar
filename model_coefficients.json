@@ -1,0 +1,36 @@
+{
+  "model": "ecmwf_ifs",
+  "formula": "kwh = intercept + day_sin*sin(2*pi*doy/365.25) + day_cos*cos(2*pi*doy/365.25) + kwh_m2*x + kwh_m2_x_tmean*x*tmean",
+  "inputs": {
+    "doy": "day of year of the target date (Jan 1 = 1)",
+    "x": "ECMWF daily shortwave radiation sum (kWh/m2, 00-23h KST)",
+    "tmean": "ECMWF daily mean 2 m temperature (degC, mean of 24 hourly values 00-23h KST)"
+  },
+  "trained_with": "Orange linear regression, 2025-09-26 ~ 2026-10-23, ECMWF Previous Runs lead 1/2/3",
+  "leads": {
+    "1": {
+      "intercept": -76.759,
+      "day_sin": -30.6383,
+      "day_cos": 40.2758,
+      "kwh_m2": 126.819,
+      "kwh_m2_x_tmean": -1.15863,
+      "mae_kwh": 59.5
+    },
+    "2": {
+      "intercept": -42.6106,
+      "day_sin": -14.8019,
+      "day_cos": 20.3268,
+      "kwh_m2": 118.567,
+      "kwh_m2_x_tmean": -1.16512,
+      "mae_kwh": 73.0
+    },
+    "3": {
+      "intercept": 3.05323,
+      "day_sin": 4.51132,
+      "day_cos": 8.40671,
+      "kwh_m2": 111.086,
+      "kwh_m2_x_tmean": -1.1904,
+      "mae_kwh": 85.0
+    }
+  }
+}
