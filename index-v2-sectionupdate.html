@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>우리 학교 태양광 발전 모니터링</title>
+  <meta name="color-scheme" content="light dark" />
+  <meta name="theme-color" content="#faf8f3" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#14130f" media="(prefers-color-scheme: dark)" />
+  <meta name="description" content="ECMWF 일사량 예보 기반 우리 학교 태양광 발전량 실시간 모니터링" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #faf8f3;          /* 따뜻한 흰색 */
+      --surface: #fffdf8;
+      --ink: #141414;         /* 본문 검정 */
+      --ink-2: #5c5a55;       /* 보조 텍스트 */
+      --ink-3: #8f8c85;       /* 약한 텍스트 */
+      --line: #e7e3d9;        /* 구분선 */
+      --skeleton: #eeeae0;
+      --skeleton-hi: #f7f4ec;
+      --ok: #2f7d4f;
+      --warn: #b4542a;
+      --warn-bg: #fbf1e9;
+      --radius: 14px;
+      --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      --flash: #f3e9c9;
+      --grid: #efebe2;
+      --fill: rgba(20, 20, 20, 0.05);
+      --band: rgba(20, 20, 20, 0.10);   /* 오차 범위 */
+      --miss: rgba(20, 20, 20, 0.045);  /* 데이터 없음 구간 */
+      color-scheme: light dark;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14130f;          /* 따뜻한 검정 */
+        --surface: #1b1a16;
+        --ink: #f3f0e8;
+        --ink-2: #b3b0a6;
+        --ink-3: #84817a;
+        --line: #2d2b25;
+        --skeleton: #25231e;
+        --skeleton-hi: #302e27;
+        --ok: #5fbf86;
+        --warn: #e8935f;
+        --warn-bg: #2a1f17;
+        --flash: #3a3320;
+        --grid: #24221d;
+        --fill: rgba(243, 240, 232, 0.07);
+        --band: rgba(243, 240, 232, 0.13);
+        --miss: rgba(243, 240, 232, 0.05);
+      }
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      font-family: "Noto Sans KR", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 64px; }
+
+    /* ---------- Header ---------- */
+    header {
+      display: flex; justify-content: space-between; align-items: flex-end;
+      gap: 16px; flex-wrap: wrap;
+      padding-bottom: 24px; border-bottom: 1px solid var(--ink);
+    }
+    .eyebrow { font-size: 13px; letter-spacing: 0.08em; color: var(--ink-2); margin-bottom: 6px; }
+    h1 { font-size: clamp(24px, 4vw, 34px); font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+    .status { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 13px; color: var(--ink-2); }
+    .live { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; color: var(--ink); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); position: relative; }
+    .live[data-state="on"] .dot { background: var(--ok); }
+    .live[data-state="on"] .dot::after {
+      content: ""; position: absolute; inset: -4px; border-radius: 50%;
+      border: 1px solid var(--ok); opacity: 0; animation: ping 2s ease-out infinite;
+    }
+    .live[data-state="off"] .dot, .live[data-state="stale"] .dot { background: var(--warn); }
+    @keyframes ping { 0% { transform: scale(.6); opacity: .8; } 100% { transform: scale(1.6); opacity: 0; } }
+    .updated { font-family: var(--mono); font-size: 12px; }
+    .updated.stale { color: var(--warn); }
+
+    /* ---------- Page navigation ---------- */
+    .page-nav { display: flex; gap: 4px; margin-top: 18px; }
+    .page-tab {
+      padding: 8px 14px; border: 0; border-bottom: 2px solid transparent;
+      background: transparent; color: var(--ink-2); cursor: pointer;
+      font: inherit; font-size: 14px;
+    }
+    .page-tab:hover { color: var(--ink); }
+    .page-tab[aria-selected="true"] { border-bottom-color: var(--ink); color: var(--ink); font-weight: 700; }
+    .page-tab:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 3px; }
+    .page-panel[hidden] { display: none; }
+
+    /* ---------- Notices ---------- */
+    .notices { display: grid; gap: 8px; margin-top: 24px; }
+    .notices:empty { display: none; }
+    .notice {
+      padding: 12px 16px; border-radius: 8px;
+      border: 1px solid var(--line); border-left: 3px solid var(--warn);
+      background: var(--warn-bg); font-size: 14px; color: var(--ink);
+    }
+    .notice b { font-weight: 700; }
+    .notice small { display: block; color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+
+    /* ---------- Section ---------- */
+    section { margin-top: 40px; }
+    .section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+    h2 { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+    .sub { font-size: 13px; color: var(--ink-3); }
+
+    /* ---------- Hero ---------- */
+    .hero { display: grid; grid-template-columns: 1.3fr 1fr; gap: 24px; align-items: end; }
+    .hero-label { font-size: 15px; color: var(--ink-2); margin-bottom: 8px; }
+    .hero-value {
+      display: flex; align-items: baseline; gap: 10px;
+      font-family: var(--mono); font-weight: 500;
+      font-size: clamp(56px, 11vw, 112px); letter-spacing: -0.04em; line-height: 1;
+    }
+    .hero-value .unit { font-size: 0.26em; letter-spacing: 0; color: var(--ink-2); font-family: "Noto Sans KR", sans-serif; }
+    .hero-value .pm { font-size: 0.22em; letter-spacing: 0; color: var(--ink-3); font-family: var(--mono); }
+    .hero-value.empty { font-family: "Noto Sans KR", sans-serif; font-size: clamp(36px, 6vw, 56px); color: var(--ink-3); letter-spacing: -0.02em; }
+    .hero-value.empty .unit, .hero-value.empty .pm { display: none; }
+    .hero-meta { margin-top: 14px; font-size: 14px; color: var(--ink-2); }
+    .hero-meta b { color: var(--ink); font-weight: 500; font-family: var(--mono); }
+
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--line); }
+    .stat { padding: 14px 0 0; }
+    .stat + .stat { padding-left: 16px; border-left: 1px solid var(--line); }
+    .stat-label { font-size: 12px; color: var(--ink-3); margin-bottom: 4px; }
+    .stat-value { font-family: var(--mono); font-size: 20px; font-weight: 500; }
+    .stat-value small { font-size: 12px; color: var(--ink-2); font-family: "Noto Sans KR", sans-serif; margin-left: 2px; }
+
+    /* ---------- Forecast cards ---------- */
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; }
+    .card.today { border-color: var(--ink); }
+    .card.missing { background: transparent; border-style: dashed; }
+    .card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .chip { font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--ink); }
+    .card.today .chip { background: var(--ink); color: var(--bg); }
+    .card-date { font-family: var(--mono); font-size: 13px; color: var(--ink-2); }
+    .card-power { font-family: var(--mono); font-size: 34px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.1; }
+    .card-power small { font-size: 14px; color: var(--ink-2); font-family: "Noto Sans KR", sans-serif; margin-left: 4px; letter-spacing: 0; }
+    .card-power.empty { font-family: "Noto Sans KR", sans-serif; font-size: 24px; color: var(--ink-3); letter-spacing: -0.01em; }
+    .card-pm { font-family: var(--mono); font-size: 13px; color: var(--ink-3); margin-top: 4px; }
+    .card-rows { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--line); display: grid; gap: 6px; }
+    .row { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-2); }
+    .row span:last-child { font-family: var(--mono); color: var(--ink); }
+    .row.note span { color: var(--warn); font-family: inherit; }
+    .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 14px; overflow: hidden; }
+    .bar > i { display: block; height: 100%; width: 0; background: var(--ink); transition: width .6s ease; }
+
+    /* ---------- Chart ---------- */
+    .chart-box { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 16px 12px; }
+    .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); }
+    .legend span { display: inline-flex; align-items: center; gap: 8px; }
+    .legend i { width: 22px; height: 0; border-top: 2px solid var(--ink); display: inline-block; }
+    .legend i.dashed { border-top-style: dashed; }
+    .legend i.band { height: 10px; border: 0; background: var(--band); border-radius: 2px; }
+    .legend i.miss { width: 12px; height: 12px; border: 1px dashed var(--ink-3); background: var(--miss); border-radius: 2px; }
+    .chart-wrap { position: relative; height: 340px; }
+    .chart-note { margin-top: 10px; font-size: 12px; color: var(--ink-3); }
+
+    /* ---------- Model explanation ---------- */
+    .model-intro { max-width: 760px; color: var(--ink-2); }
+    .model-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+    .model-card {
+      background: var(--surface); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 20px;
+    }
+    .model-card h3 { font-size: 15px; margin-bottom: 8px; }
+    .model-card p, .model-card li { font-size: 14px; color: var(--ink-2); }
+    .model-card ul { padding-left: 20px; display: grid; gap: 6px; }
+    .formula {
+      margin-top: 12px; padding: 16px; overflow-x: auto;
+      border-radius: 8px; background: var(--bg);
+      font: 14px/1.8 var(--mono); color: var(--ink);
+      white-space: nowrap;
+    }
+    .model-table-wrap { overflow-x: auto; }
+    .model-table { width: 100%; min-width: 680px; border-collapse: collapse; font-size: 13px; }
+    .model-table th, .model-table td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: right; }
+    .model-table th { color: var(--ink-2); font-weight: 500; white-space: nowrap; }
+    .model-table th:first-child, .model-table td:first-child { text-align: left; }
+    .model-table td:not(:first-child) { font-family: var(--mono); }
+    .model-note { margin-top: 12px; font-size: 12px; color: var(--ink-3); }
+
+    /* ---------- Skeleton ---------- */
+    .sk {
+      color: transparent !important;
+      background: linear-gradient(90deg, var(--skeleton) 25%, var(--skeleton-hi) 37%, var(--skeleton) 63%);
+      background-size: 400% 100%; animation: shimmer 1.4s ease infinite;
+      border-radius: 6px; user-select: none;
+    }
+    .sk * { visibility: hidden; }
+    @keyframes shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+    .sk-block { position: absolute; inset: 0; border-radius: 10px; }
+    .is-loaded .sk-block { display: none; }
+
+    .flash { animation: flash 1s ease; }
+    @keyframes flash { 0% { background: var(--flash); } 100% { background: transparent; } }
+
+    footer {
+      margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line);
+      font-size: 12px; color: var(--ink-3);
+      display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    }
+
+    /* ---------- Responsive ---------- */
+    @media (max-width: 820px) {
+      .hero { grid-template-columns: 1fr; }
+      .cards { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 520px) {
+      .wrap { padding: 28px 16px 48px; }
+      header { align-items: flex-start; }
+      .status { align-items: flex-start; }
+      .chart-wrap { height: 260px; }
+      .stat-value { font-size: 17px; }
+      .legend { gap: 10px; font-size: 12px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <p class="eyebrow">SOLAR POWER MONITOR</p>
+        <h1>우리 학교 태양광 발전 모니터링</h1>
+        <nav class="page-nav" aria-label="페이지 선택" role="tablist">
+          <button class="page-tab" id="dashboardTab" type="button" role="tab" aria-selected="true" aria-controls="dashboardPage" data-page="dashboard">발전량 모니터링</button>
+          <button class="page-tab" id="modelTab" type="button" role="tab" aria-selected="false" aria-controls="modelPage" data-page="model" tabindex="-1">예측 모델 설명</button>
+        </nav>
+      </div>
+      <div class="status">
+        <span class="live" id="live" data-state="wait"><span class="dot"></span><span id="liveText">연결 중…</span></span>
+        <span class="updated" id="updatedWrap">예측 갱신 <span id="updatedAt" class="sk">0000-00-00 00:00</span></span>
+      </div>
+    </header>
+
+    <div class="page-panel" id="dashboardPage">
+      <div class="notices" id="notices" aria-live="polite"></div>
+
+      <!-- 오늘 -->
+      <section class="hero" aria-live="polite">
+      <div>
+        <p class="hero-label">오늘 예상 발전량</p>
+        <div class="hero-value" id="heroValueWrap">
+          <span id="heroValue" class="sk">000.0</span><span class="unit">kWh</span><span class="pm" id="heroPm"></span>
+        </div>
+        <p class="hero-meta" id="heroMeta">예상 일사량 <b class="sk">0.0</b> kWh/m² · <b class="sk">0.00</b> MJ/m²</p>
+      </div>
+      <div class="stats">
+        <div class="stat"><p class="stat-label" id="statSumLabel">최근 30일 합계</p><p class="stat-value"><span id="statSum" class="sk">0,000</span><small>kWh</small></p></div>
+        <div class="stat"><p class="stat-label">일평균</p><p class="stat-value"><span id="statAvg" class="sk">000.0</span><small>kWh</small></p></div>
+        <div class="stat"><p class="stat-label">최고</p><p class="stat-value"><span id="statMax" class="sk">000.0</span><small>kWh</small></p></div>
+      </div>
+      </section>
+
+      <!-- 3일 예측 -->
+      <section>
+        <div class="section-head">
+          <h2>3일 발전량 예측</h2>
+          <span class="sub">ECMWF 일사량 예보 기반 · ± 평균 오차</span>
+        </div>
+        <div class="cards" id="cards"></div>
+      </section>
+
+      <!-- 그래프 -->
+      <section>
+        <div class="section-head">
+          <h2>발전량 추이</h2>
+          <div class="legend">
+            <span><i></i>지난 기록</span>
+            <span><i class="dashed"></i>예측</span>
+            <span><i class="band"></i>오차 범위</span>
+            <span><i class="miss"></i>데이터 없음</span>
+          </div>
+        </div>
+        <div class="chart-box">
+          <div class="chart-wrap" id="chartWrap">
+            <div class="sk sk-block"></div>
+            <canvas id="chart" aria-label="일별 발전량 그래프"></canvas>
+          </div>
+          <p class="chart-note">오차 범위는 과거 1년 데이터로 검증한 모델의 평균 오차(±)입니다. 실제 발전량이 이 범위를 벗어나는 날도 있습니다.</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="page-panel" id="modelPage" hidden>
+      <section>
+        <div class="section-head">
+          <h2>예측 모델 설명</h2>
+          <span class="sub">선형 회귀 · ECMWF Previous Runs</span>
+        </div>
+        <p class="model-intro">
+          날짜, ECMWF 일사량 예측값, ECMWF 2 m 평균기온 예측값을 이용해 하루 발전량을 예측합니다.
+          날짜의 계절성을 표현하기 위해 연중 일수는 사인·코사인으로 변환하고, 일사량과 기온의 상호작용도 함께 반영했습니다.
+        </p>
+      </section>
+
+      <section>
+        <div class="model-grid">
+          <article class="model-card">
+            <h3>1. 입력값 준비</h3>
+            <ul>
+              <li><b>doy</b>: 목표 날짜의 연중 일수 (1월 1일 = 1)</li>
+              <li><b>x</b>: 하루 일사량 예측값 (kWh/m²)</li>
+              <li><b>tmean</b>: 24시간 평균기온 예측값 (°C)</li>
+            </ul>
+          </article>
+          <article class="model-card">
+            <h3>2. 날짜의 계절성 변환</h3>
+            <p>날짜를 그대로 넣지 않고 1년 주기의 위치로 바꿉니다.</p>
+            <div class="formula">sin(2π × doy / 365.25), cos(2π × doy / 365.25)</div>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>계산식</h2>
+          <span class="sub">kWh 단위</span>
+        </div>
+        <div class="model-card">
+          <div class="formula">kwh = intercept + day_sin × sin(2π × doy / 365.25) + day_cos × cos(2π × doy / 365.25) + kwh_m2 × x + kwh_m2_x_tmean × x × tmean</div>
+          <p class="model-note">마지막 항은 일사량이 같아도 기온에 따라 발전량이 달라지는 효과를 반영합니다. 오차 범위의 하한은 0 kWh 아래로 내려가지 않도록 계산합니다.</p>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>리드타임별 계수</h2>
+          <span class="sub">예보 시점부터 목표일까지의 일수</span>
+        </div>
+        <div class="model-card model-table-wrap">
+          <table class="model-table">
+            <thead>
+              <tr><th>예측 시점</th><th>intercept</th><th>day_sin</th><th>day_cos</th><th>kwh_m2</th><th>kwh_m2_x_tmean</th><th>평균 오차</th></tr>
+            </thead>
+            <tbody>
+              <tr><th>1일 전 예보</th><td>-76.759</td><td>-30.6383</td><td>40.2758</td><td>126.819</td><td>-1.15863</td><td>±59.5</td></tr>
+              <tr><th>2일 전 예보</th><td>-42.6106</td><td>-14.8019</td><td>20.3268</td><td>118.567</td><td>-1.16512</td><td>±73.0</td></tr>
+              <tr><th>3일 전 예보</th><td>3.05323</td><td>4.51132</td><td>8.40671</td><td>111.086</td><td>-1.1904</td><td>±85.0</td></tr>
+            </tbody>
+          </table>
+          <p class="model-note">학습 기간: 2025-09-26 ~ 2026-10-23 · Orange 선형 회귀 · ECMWF Previous Runs lead 1/2/3</p>
+        </div>
+      </section>
+    </div>
+
+    <footer>
+      <span>일사량 예보: ECMWF IFS · <a href="https://open-meteo.com/" style="color:inherit">Weather data by Open-Meteo.com</a> (CC BY 4.0)</span>
+      <span>예측값은 실제 발전량과 다를 수 있습니다.</span>
+    </footer>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+    import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+
+    /* =========================================================
+       설정
+       ========================================================= */
+    const firebaseConfig = {
+      databaseURL: "https://resistor-solar-default-rtdb.asia-southeast1.firebasedatabase.app/",
+    };
+    const DB_PATH = "v2";                        // collector.py 의 DB_ROOT 와 같아야 함
+    const STALE_HOURS = 26;                      // 수집은 매일 04:00 → 26시간 넘게 갱신 없으면 경고
+    const DEFAULT_MAE = { 1: 63.8, 2: 75.7, 3: 77.6 }; // Firebase에 mae_kwh가 없을 때 쓰는 모델 검증 오차(kWh)
+    const SLOTS = [
+      { key: "d1", lead: 1, offset: 0, label: "오늘" },
+      { key: "d2", lead: 2, offset: 1, label: "내일" },
+      { key: "d3", lead: 3, offset: 2, label: "모레" },
+    ];
+
+    /* =========================================================
+       Helpers
+       ========================================================= */
+    const $ = (id) => document.getElementById(id);
+    const pagePanels = { dashboard: $("dashboardPage"), model: $("modelPage") };
+    const pageTabs = [...document.querySelectorAll(".page-tab")];
+    function showPage(page) {
+      const selected = pagePanels[page] ? page : "dashboard";
+      for (const [key, panel] of Object.entries(pagePanels)) panel.hidden = key !== selected;
+      for (const tab of pageTabs) {
+        const isSelected = tab.dataset.page === selected;
+        tab.setAttribute("aria-selected", String(isSelected));
+        tab.tabIndex = isSelected ? 0 : -1;
+      }
+    }
+    pageTabs.forEach((tab) => tab.addEventListener("click", () => showPage(tab.dataset.page)));
+    pageTabs.forEach((tab) => tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const current = pageTabs.indexOf(tab);
+      const next = pageTabs[(current + (event.key === "ArrowRight" ? 1 : -1) + pageTabs.length) % pageTabs.length];
+      showPage(next.dataset.page);
+      next.focus();
+    }));
+    const WEEK = ["일", "월", "화", "수", "목", "금", "토"];
+    const num = (v) => (v === null || v === undefined || v === "" ? NaN : Number(v));
+    const ok = (v) => Number.isFinite(num(v));
+    const fmt = (v, d = 1) =>
+      ok(v) ? num(v).toLocaleString("ko-KR", { minimumFractionDigits: d, maximumFractionDigits: d }) : "–";
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    // 날짜는 모두 "YYYY-MM-DD" 문자열로 다룸 (한국 시간 기준)
+    const todayKST = () =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    const toUTC = (s) => { const [y, m, d] = s.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+    const addDays = (s, n) => new Date(toUTC(s) + n * 86400000).toISOString().slice(0, 10);
+    const dayDiff = (a, b) => Math.round((toUTC(a) - toUTC(b)) / 86400000);
+    const weekday = (s) => WEEK[new Date(toUTC(s)).getUTCDay()];
+    const shortDate = (s) => { const [, m, d] = s.split("-").map(Number); return `${m}/${d}`; };
+    const isDate = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+    // "YYYY-MM-DD HH:MM:SS" (KST) → Date
+    const parseKST = (s) => (typeof s === "string" && s.length >= 16 ? new Date(s.slice(0, 19).replace(" ", "T") + "+09:00") : null);
+
+    function setText(id, text) {
+      const el = $(id);
+      if (!el) return;
+      const wasLoading = el.classList.contains("sk");
+      el.classList.remove("sk");
+      if (el.textContent !== text) {
+        el.textContent = text;
+        if (!wasLoading) { el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+      }
+    }
+
+    /* =========================================================
+       경고 / 안내
+       ========================================================= */
+    const notices = {};   // key → html
+    function setNotice(key, html) {
+      if (html) notices[key] = html; else delete notices[key];
+      $("notices").innerHTML = Object.values(notices).map((h) => `<div class="notice">${h}</div>`).join("");
+    }
+
+    let connected = null;
+    let stale = false;
+    function updateLive() {
+      const el = $("live");
+      if (connected === false) { el.dataset.state = "off"; $("liveText").textContent = "연결 끊김 · 재연결 중"; }
+      else if (stale) { el.dataset.state = "stale"; $("liveText").textContent = "예측 갱신 지연"; }
+      else if (connected) { el.dataset.state = "on"; $("liveText").textContent = "실시간 연결됨"; }
+    }
+
+    function checkStale(latest) {
+      const t = parseKST(latest?.updated_at);
+      const hours = t ? (Date.now() - t.getTime()) / 3600000 : Infinity;
+      stale = !!latest && hours > STALE_HOURS;   // 데이터가 아예 없을 때는 "데이터 없음" 안내만 표시
+      $("updatedWrap").classList.toggle("stale", stale);
+      if (stale) {
+        const when = latest?.updated_at ? latest.updated_at.slice(0, 16) : "기록 없음";
+        const ago = Number.isFinite(hours) ? ` (${Math.floor(hours / 24) >= 1 ? Math.floor(hours / 24) + "일 " : ""}${Math.floor(hours % 24)}시간 전)` : "";
+        setNotice("stale", `<b>예측이 갱신되지 않았습니다.</b><small>마지막 갱신: ${esc(when)}${ago}. 수집 서버 상태를 확인해 주세요.</small>`);
+      } else {
+        setNotice("stale", "");
+      }
+      updateLive();
+    }
+
+    /* =========================================================
+       데이터 정리
+       ========================================================= */
+    function normalize(solar) {
+      const latest = solar?.latest || null;
+      const today = todayKST();
+
+      // 예측: 날짜 → { ...entry, lead, mae }
+      const fc = new Map();
+      for (const s of SLOTS) {
+        const e = latest?.[s.key];
+        if (e && isDate(e.date) && ok(e.power_kwh)) {
+          const mae = ok(e.mae_kwh) ? num(e.mae_kwh) : DEFAULT_MAE[s.lead];
+          fc.set(e.date, { ...e, lead: s.lead, mae });
+        }
+      }
+
+      // 지난 기록: 오늘까지만
+      const hist = new Map();
+      for (const h of Object.values(solar?.history || {})) {
+        if (h && isDate(h.date) && ok(h.power_kwh) && h.date <= today) hist.set(h.date, h);
+      }
+
+      return { latest, today, fc, hist };
+    }
+
+    /* =========================================================
+       렌더링: 오늘 / 통계 / 카드
+       ========================================================= */
+    function renderHero({ today, fc }) {
+      const e = fc.get(today);
+      const wrap = $("heroValueWrap");
+      if (e) {
+        wrap.classList.remove("empty");
+        setText("heroValue", fmt(e.power_kwh));
+        $("heroPm").textContent = `±${fmt(e.mae, 0)}`;
+        $("heroMeta").innerHTML =
+          `예상 일사량 <b>${fmt(e.kwh_m2, 2)}</b> kWh/m² · <b>${fmt(e.mj_m2, 2)}</b> MJ/m²` +
+          (e.filled_hours ? ` · 예보 ${num(e.filled_hours)}시간 보간` : "");
+      } else {
+        wrap.classList.add("empty");
+        setText("heroValue", "데이터 없음");
+        $("heroPm").textContent = "";
+        $("heroMeta").textContent = `${today} (${weekday(today)}) 예측 데이터가 없습니다.`;
+      }
+    }
+
+    function renderStats({ hist }) {
+      const vals = [...hist.values()].map((h) => num(h.power_kwh));
+      if (vals.length) {
+        const sum = vals.reduce((a, b) => a + b, 0);
+        $("statSumLabel").textContent = `최근 ${vals.length}일 합계`;
+        setText("statSum", fmt(sum, 0));
+        setText("statAvg", fmt(sum / vals.length));
+        setText("statMax", fmt(Math.max(...vals)));
+      } else {
+        $("statSumLabel").textContent = "최근 기록 합계";
+        ["statSum", "statAvg", "statMax"].forEach((id) => setText(id, "–"));
+      }
+    }
+
+    function renderCards({ today, fc }) {
+      const entries = SLOTS.map((s) => ({ slot: s, date: addDays(today, s.offset), e: fc.get(addDays(today, s.offset)) }));
+      const maxP = Math.max(1, ...entries.filter((x) => x.e).map((x) => num(x.e.power_kwh)));
+
+      $("cards").innerHTML = entries.map(({ slot, date, e }) => {
+        const top = `
+          <div class="card-top">
+            <span class="chip">${slot.label}</span>
+            <span class="card-date">${date} (${weekday(date)})</span>
+          </div>`;
+        if (!e) {
+          return `
+          <article class="card missing ${slot.offset === 0 ? "today" : ""}">
+            ${top}
+            <div class="card-power empty">데이터 없음</div>
+            <div class="card-pm">&nbsp;</div>
+            <div class="card-rows">
+              <div class="row"><span>일사량</span><span>–</span></div>
+              <div class="row"><span>일사량 (MJ 환산)</span><span>–</span></div>
+            </div>
+            <div class="bar"><i></i></div>
+          </article>`;
+        }
+        const pct = Math.max(0, Math.min(100, (num(e.power_kwh) / maxP) * 100));
+        return `
+          <article class="card ${slot.offset === 0 ? "today" : ""}">
+            ${top}
+            <div class="card-power">${fmt(e.power_kwh)}<small>kWh</small></div>
+            <div class="card-pm">± ${fmt(e.mae, 0)} kWh</div>
+            <div class="card-rows">
+              <div class="row"><span>일사량</span><span>${fmt(e.kwh_m2, 2)} kWh/m²</span></div>
+              <div class="row"><span>일사량 (MJ 환산)</span><span>${fmt(e.mj_m2, 2)} MJ/m²</span></div>
+              ${e.filled_hours ? `<div class="row note"><span>예보 일부 결측</span><span>${num(e.filled_hours)}시간 보간</span></div>` : ""}
+            </div>
+            <div class="bar"><i style="width:${pct}%"></i></div>
+          </article>`;
+      }).join("");
+    }
+
+    /* =========================================================
+       그래프
+       ========================================================= */
+    let chart = null;
+    let view = { labels: [], missing: new Set(), fc: new Map() };  // 툴팁·플러그인이 참조하는 현재 상태
+
+    const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    const themeColors = () => ({
+      ink: cssVar("--ink"), bg: cssVar("--bg"), ink3: cssVar("--ink-3"), line: cssVar("--line"),
+      grid: cssVar("--grid"), fill: cssVar("--fill"), band: cssVar("--band"), miss: cssVar("--miss"),
+    });
+
+    // 데이터 없는 날짜에 옅은 배경 + "데이터 없음" 표시
+    const missingPlugin = {
+      id: "missingBands",
+      beforeDatasetsDraw(c) {
+        const { ctx, chartArea: a, scales: { x } } = c;
+        if (!view.missing.size || !a) return;
+        const step = view.labels.length > 1 ? x.getPixelForValue(1) - x.getPixelForValue(0) : a.right - a.left;
+        const col = themeColors();
+
+        // 연속된 날짜를 하나의 구간으로 묶기
+        const runs = [];
+        view.labels.forEach((d, i) => {
+          if (!view.missing.has(d)) return;
+          const last = runs[runs.length - 1];
+          if (last && last.end === i - 1) last.end = i; else runs.push({ start: i, end: i });
+        });
+
+        ctx.save();
+        for (const r of runs) {
+          const x0 = Math.max(a.left, x.getPixelForValue(r.start) - step / 2);
+          const x1 = Math.min(a.right, x.getPixelForValue(r.end) + step / 2);
+          ctx.fillStyle = col.miss;
+          ctx.fillRect(x0, a.top, x1 - x0, a.bottom - a.top);
+          ctx.strokeStyle = col.ink3; ctx.globalAlpha = 0.5; ctx.setLineDash([3, 3]);
+          ctx.strokeRect(x0 + 0.5, a.top + 0.5, x1 - x0 - 1, a.bottom - a.top - 1);
+          ctx.globalAlpha = 1; ctx.setLineDash([]);
+          const w = x1 - x0;
+          ctx.fillStyle = col.ink3;
+          ctx.font = '12px "Noto Sans KR", sans-serif';
+          ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          if (w >= 64) {
+            ctx.fillText("데이터 없음", (x0 + x1) / 2, a.top + 16);
+          } else if (w >= 14) {
+            const tw = ctx.measureText("데이터 없음").width;
+            ctx.save(); ctx.translate((x0 + x1) / 2, a.top + 10 + tw / 2); ctx.rotate(-Math.PI / 2);
+            ctx.fillText("데이터 없음", 0, 0); ctx.restore();
+          }
+        }
+        ctx.restore();
+      },
+    };
+
+    function buildChartData({ today, fc, hist }) {
+      // 날짜 축: 가장 오래된 기록 ~ 모레 (빠진 날짜도 칸을 만들어 둠)
+      const fcDates = [...fc.keys()].sort();
+      const histDates = [...hist.keys()].sort();
+      let start = histDates[0] || today;
+      if (fcDates[0] && fcDates[0] < start) start = fcDates[0];
+      let end = addDays(today, 2);
+      if (fcDates.length && fcDates[fcDates.length - 1] > end) end = fcDates[fcDates.length - 1];
+
+      const labels = [];
+      for (let d = start; d <= end; d = addDays(d, 1)) labels.push(d);
+
+      // 데이터 없음: 과거·오늘은 기록도 예측도 없는 날, 미래는 예측이 없는 날
+      const missing = new Set(labels.filter((d) => !hist.has(d) && !fc.has(d)));
+
+      // 실선(지난 기록)과 점선(예측)을 이어 주는 연결점
+      const lastHist = histDates[histDates.length - 1];
+      const firstFc = fcDates.find((d) => !lastHist || d > lastHist);
+      const bridge = lastHist && firstFc && addDays(lastHist, 1) === firstFc ? lastHist : null;
+
+      const histData = labels.map((d) => (hist.has(d) ? num(hist.get(d).power_kwh) : null));
+      const fcData = labels.map((d) => (fc.has(d) ? num(fc.get(d).power_kwh) : d === bridge ? num(hist.get(d).power_kwh) : null));
+      const lo = labels.map((d) => (fc.has(d) ? Math.max(0, num(fc.get(d).power_kwh) - fc.get(d).mae) : null));
+      const hi = labels.map((d) => (fc.has(d) ? num(fc.get(d).power_kwh) + fc.get(d).mae : null));
+      const missData = labels.map((d) => (missing.has(d) ? 0 : null));   // 툴팁에 "데이터 없음"을 띄우기 위한 보이지 않는 점
+
+      return { labels, missing, histData, fcData, lo, hi, missData };
+    }
+
+    function datasets(d, c) {
+      return [
+        { id: "lo", label: "오차 하한", data: d.lo, borderWidth: 0, pointRadius: 0, pointHitRadius: 0, fill: false, spanGaps: false, tension: 0.3, order: 4 },
+        { id: "hi", label: "오차 상한", data: d.hi, borderWidth: 0, pointRadius: 0, pointHitRadius: 0, fill: "-1", backgroundColor: c.band, spanGaps: false, tension: 0.3, order: 3 },
+        {
+          id: "hist", label: "지난 기록", data: d.histData,
+          borderColor: c.ink, backgroundColor: c.fill, borderWidth: 2, fill: "origin", tension: 0.3,
+          pointRadius: (ctx) => (isolated(d.histData, ctx.dataIndex) ? 3 : 0),
+          pointBackgroundColor: c.ink, pointHoverRadius: 5, pointHoverBackgroundColor: c.ink, spanGaps: false, order: 2,
+        },
+        {
+          id: "fc", label: "예측", data: d.fcData,
+          borderColor: c.ink, borderWidth: 2, borderDash: [6, 5], fill: false, tension: 0.3,
+          pointRadius: (ctx) => (view.fc.has(view.labels[ctx.dataIndex]) ? 4 : 0),
+          pointBackgroundColor: c.bg, pointBorderColor: c.ink, pointBorderWidth: 2, pointHoverRadius: 6, spanGaps: false, order: 1,
+        },
+        { id: "miss", label: "데이터 없음", data: d.missData, showLine: false, pointRadius: 0, pointHoverRadius: 0, pointHitRadius: 0, order: 5 },
+      ];
+    }
+    // 앞뒤가 모두 비어 있는 외톨이 점은 선이 안 그려지므로 점으로 표시
+    const isolated = (arr, i) => arr[i] !== null && (arr[i - 1] ?? null) === null && (arr[i + 1] ?? null) === null;
+
+    function renderChart(state) {
+      const d = buildChartData(state);
+      view = { labels: d.labels, missing: d.missing, fc: state.fc };
+      const c = themeColors();
+
+      if (chart) {
+        chart.data.labels = d.labels;
+        chart.data.datasets = datasets(d, c);
+        applyOptionColors(c);
+        chart.update();
+        return;
+      }
+
+      Chart.defaults.font.family = '"Noto Sans KR", system-ui, sans-serif';
+      chart = new Chart($("chart"), {
+        type: "line",
+        data: { labels: d.labels, datasets: datasets(d, c) },
+        plugins: [missingPlugin],
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          animation: { duration: 500 },
+          plugins: {
+            legend: { display: false },
+            filler: { propagate: false },
+            tooltip: {
+              padding: 10, cornerRadius: 8, displayColors: false,
+              titleFont: { weight: "500" },
+              bodyFont: { family: '"JetBrains Mono", "Noto Sans KR", monospace' },
+              filter: (item) => {
+                const id = item.dataset.id;
+                const date = view.labels[item.dataIndex];
+                if (id === "lo" || id === "hi") return false;
+                if (id === "fc" && !view.fc.has(date)) return false;   // 연결점 중복 표시 방지
+                return true;
+              },
+              callbacks: {
+                title: (items) => { const dt = view.labels[items[0].dataIndex]; return `${dt} (${weekday(dt)})`; },
+                label: (item) => {
+                  const id = item.dataset.id;
+                  const date = view.labels[item.dataIndex];
+                  if (id === "miss") return "데이터 없음";
+                  if (id === "fc") return `예측  ${fmt(item.parsed.y)} kWh (±${fmt(view.fc.get(date).mae, 0)})`;
+                  return `${item.dataset.label}  ${fmt(item.parsed.y)} kWh`;
+                },
+              },
+            },
+          },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: {
+                maxRotation: 0, autoSkip: true,
+                maxTicksLimit: window.innerWidth < 520 ? 5 : 10,
+                callback: (v) => shortDate(view.labels[v] || ""),
+              },
+            },
+            y: {
+              beginAtZero: true,
+              border: { display: false },
+              title: { display: true, text: "kWh", font: { size: 12 } },
+            },
+          },
+        },
+      });
+      applyOptionColors(c);
+      chart.update("none");
+    }
+
+    function applyOptionColors(c) {
+      const o = chart.options, t = o.plugins.tooltip;
+      t.backgroundColor = c.ink; t.titleColor = c.bg; t.bodyColor = c.bg;
+      o.scales.x.border = { color: c.line }; o.scales.x.ticks.color = c.ink3;
+      o.scales.y.grid = { color: c.grid }; o.scales.y.ticks.color = c.ink3; o.scales.y.title.color = c.ink3;
+    }
+
+    /* =========================================================
+       전체 렌더
+       ========================================================= */
+    let lastSolar = undefined;
+    let lastRenderDay = null;
+
+    function render(solar) {
+      lastSolar = solar;
+      const state = normalize(solar);
+      lastRenderDay = state.today;
+
+      setText("updatedAt", state.latest?.updated_at ? state.latest.updated_at.slice(0, 16) : "기록 없음");
+      checkStale(state.latest);
+      setNotice("empty", !solar ? "<b>저장된 발전 데이터가 없습니다.</b><small>데이터가 들어오면 자동으로 표시됩니다.</small>" : "");
+
+      renderHero(state);
+      renderStats(state);
+      renderCards(state);
+      $("chartWrap").classList.add("is-loaded");
+      renderChart(state);
+    }
+
+    // 로딩 중 카드 스켈레톤
+    $("cards").innerHTML = SLOTS.map(() => `
+      <article class="card">
+        <div class="card-top"><span class="chip sk">오늘</span><span class="card-date sk">0000-00-00</span></div>
+        <div class="card-power sk">000.0<small>kWh</small></div>
+        <div class="card-rows">
+          <div class="row"><span class="sk">일사량</span><span class="sk">0.0 kWh/m²</span></div>
+          <div class="row"><span class="sk">일사량</span><span class="sk">00.00 MJ/m²</span></div>
+        </div>
+        <div class="bar"><i></i></div>
+      </article>`).join("");
+
+    // 페이지를 켜 둔 채(복도 TV 등) 시간이 지나도 맞게: 1분마다 경고 확인, 날짜가 바뀌면 다시 그림
+    setInterval(() => {
+      if (lastSolar === undefined) return;
+      if (todayKST() !== lastRenderDay) render(lastSolar);
+      else checkStale(lastSolar?.latest);
+    }, 60000);
+
+    // 시스템 테마가 바뀌면 그래프 색 갱신
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      if (lastSolar !== undefined && chart) renderChart(normalize(lastSolar));
+    });
+
+    // 테스트/디버깅용
+    window.SolarDashboard = { render };
+
+    /* =========================================================
+       Firebase 실시간 구독
+       ========================================================= */
+    try {
+      const app = initializeApp(firebaseConfig);
+      const dbi = getDatabase(app);
+
+      onValue(ref(dbi, ".info/connected"), (snap) => {
+        connected = snap.val() === true;
+        updateLive();
+      });
+
+      onValue(
+        ref(dbi, DB_PATH),
+        (snap) => { setNotice("error", ""); render(snap.val()); },
+        (err) => {
+          console.error(err);
+          connected = false; updateLive();
+          setNotice("error", `<b>데이터를 불러오지 못했습니다.</b><small>${esc(err.code || err.message)} · 데이터베이스 읽기 권한을 확인해 주세요.</small>`);
+        }
+      );
+    } catch (err) {
+      console.error(err);
+      setNotice("error", "<b>Firebase 초기화에 실패했습니다.</b><small>네트워크 연결을 확인해 주세요.</small>");
+    }
+  </script>
+</body>
+</html>
