@@ -2,15 +2,7 @@ name: Solar Collector Automation
 
 on:
   schedule:
-    # KST 기준 03:30, 09:30, 15:30, 21:30
-    # GitHub Actions의 cron은 UTC 기준으로 동작하므로 KST 대비 9시간을 뺌
-    # KST 03:30 -> UTC 18:30 (전날)
-    # KST 09:30 -> UTC 00:30
-    # KST 15:30 -> UTC 06:30
-    # KST 21:30 -> UTC 12:30
     - cron: '30 18,0,6,12 * * *'
-  
-  # 수동으로도 실행할 수 있도록 설정 (테스트용)
   workflow_dispatch:
 
 jobs:
@@ -24,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # 사용하는 파이썬 버전에 맞게 조절
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
@@ -32,8 +24,35 @@ jobs:
           pip install requests firebase-admin
 
       - name: Create serviceAccountKey.json from GitHub Secret
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" > serviceAccountKey.json
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          raw = os.environ.get("FIREBASE_SERVICE_ACCOUNT", "").strip()
+          if not raw:
+              print("FIREBASE_SERVICE_ACCOUNT is empty", file=sys.stderr)
+              sys.exit(1)
+
+          def parse_service_account(text):
+              try:
+                  return json.loads(text)
+              except json.JSONDecodeError:
+                  normalized = re.sub(r'([{\[,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', text)
+                  return json.loads(normalized)
+
+          data = parse_service_account(raw)
+          with open("serviceAccountKey.json", "w", encoding="utf-8") as f:
+              json.dump(data, f, ensure_ascii=False, indent=2)
+          PY
+
+      - name: Check files in directory (Debug)
+        run: |
+          ls -la
 
       - name: Run collector script
         run: |
