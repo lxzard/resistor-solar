@@ -52,6 +52,8 @@ HISTORY_DAYS = 30
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 RETRIES = 3
+RETRY_DELAY_SECONDS = 30
+MAX_RETRY_DELAY_SECONDS = 120
 
 NIGHT_HOURS = set(range(0, 6)) | set(range(20, 24))   # 일사량이 사실상 0인 시간 (KST)
 MAX_FILLED_DAY_HOURS = 4                               # 낮 시간 결측이 이보다 많으면 그날은 제외
@@ -113,7 +115,14 @@ def fetch_daily_forecast():
         except (requests.RequestException, ValueError, KeyError) as e:
             last_err = e
             if attempt < RETRIES:
-                time.sleep(5 * attempt)
+                retry_after = getattr(getattr(e, "response", None), "headers", {}).get("Retry-After")
+                try:
+                    delay = float(retry_after)
+                except (TypeError, ValueError):
+                    delay = RETRY_DELAY_SECONDS * 2 ** (attempt - 1)
+                delay = min(max(delay, RETRY_DELAY_SECONDS), MAX_RETRY_DELAY_SECONDS)
+                print(f"Open-Meteo request failed ({e}); retrying in {delay:g}s", file=sys.stderr)
+                time.sleep(delay)
     else:
         raise RuntimeError(f"Open-Meteo request failed after {RETRIES} tries: {last_err}")
 
